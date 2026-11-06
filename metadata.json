@@ -1,0 +1,6 @@
+{
+  "name": "Doc & Photo Toolkit",
+  "description": "All-in-one offline toolkit for photo resizing, PDF tools, format conversion, passport photo maker, OCR, and document scanning.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
