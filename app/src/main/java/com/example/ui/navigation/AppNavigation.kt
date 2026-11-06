@@ -1,6 +1,8 @@
 package com.example.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
@@ -9,6 +11,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.data.repository.HistoryRepository
 import com.example.data.repository.LanguageRepository
+import com.example.data.repository.ThemeMode
+import com.example.data.repository.ThemeRepository
 import com.example.ui.converter.DocToPdfScreen
 import com.example.ui.converter.ImageConverterScreen
 import com.example.ui.converter.ImageToPdfScreen
@@ -30,8 +34,6 @@ import com.example.ui.tools.OcrTextScreen
 import com.example.ui.tools.PdfSecurityScreen
 import com.example.ui.tools.PdfWatermarkScreen
 import com.example.ui.tools.SignatureScreen
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 
 object AppRoutes {
     const val HOME = "home"
@@ -56,6 +58,8 @@ object AppRoutes {
 
 @Composable
 fun AppNavigation(
+    isDarkMode: Boolean,
+    onToggleTheme: () -> Unit,
     navController: NavHostController = rememberNavController()
 ) {
     val context = LocalContext.current
@@ -73,6 +77,8 @@ fun AppNavigation(
         composable(AppRoutes.HOME) {
             HomeScreen(
                 viewModel = homeViewModel,
+                isDarkMode = isDarkMode,
+                onToggleTheme = onToggleTheme,
                 onNavigateToTool = { route -> navController.navigate(route) },
                 onNavigateToHistory = { navController.navigate(AppRoutes.HISTORY) }
             )
@@ -198,6 +204,7 @@ fun AppNavigation(
         composable(AppRoutes.AI_ASSISTANT) {
             AiDocAssistantScreen(
                 currentLang = currentLang,
+                historyRepository = historyRepository,
                 onNavigateBack = { navController.popBackStack() }
             )
         }

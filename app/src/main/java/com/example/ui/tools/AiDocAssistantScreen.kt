@@ -1,6 +1,23 @@
 package com.example.ui.tools
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,8 +38,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -30,7 +54,9 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,55 +69,153 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.data.model.FileHistoryItem
+import com.example.data.repository.HistoryRepository
 import com.example.ui.components.AppTopBar
+import com.example.ui.components.BeforeAfterCard
+import com.example.ui.components.Card3D
+import com.example.ui.components.pulseGlow
+import com.example.ui.components.stretchBounceClickable
+import com.example.ui.theme.LocalCustomTheme
 import com.example.utils.AppLanguage
+import com.example.utils.BitmapUtils
+import com.example.utils.StorageUtils
 import com.example.utils.StringsUtil
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-data class ChatMessage(val text: String, val isUser: Boolean, val timestamp: Long = System.currentTimeMillis())
+data class ChatItem(
+    val id: String = System.currentTimeMillis().toString(),
+    val text: String,
+    val isUser: Boolean,
+    val attachedBitmap: Bitmap? = null,
+    val executionResult: AiExecutionResult? = null,
+    val timestamp: Long = System.currentTimeMillis()
+)
 
 @Composable
 fun AiDocAssistantScreen(
     currentLang: AppLanguage,
+    historyRepository: HistoryRepository,
     onNavigateBack: () -> Unit
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val customTheme = LocalCustomTheme.current
+
     var inputText by remember { mutableStateOf("") }
     var isThinking by remember { mutableStateOf(false) }
+    var selectedAttachedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var selectedAttachedSize by remember { mutableStateOf(0L) }
 
     val messages = remember {
         mutableStateListOf(
-            ChatMessage(
+            ChatItem(
                 text = if (currentLang == AppLanguage.HINDI)
-                    "नमस्ते! मैं आपका स्मार्ट डॉक व फोटो असिस्टेंट हूँ। आप पासपोर्ट फोटो विनिर्देश, सरकारी परीक्षा फॉर्म नियम, पीडीएफ कंप्रेशन या दस्तावेज़ सारांश के बारे में कुछ भी पूछ सकते हैं!"
+                    "नमस्ते! मैं आपका Gemini AI पावर्ड असिस्टेंट हूँ। आप कोई भी फोटो अटैच करें और बोलें जैसे:\n• 'इसको 50 KB में कंप्रेस कर दो'\n• 'पासपोर्ट फोटो बनाओ white background के साथ'\n• 'Background हटा दो'\n• '90 डिग्री घुमा दो'\n• 'कागज़ को B&W डॉक्यूमेंट बना दो'\nमैं ऐप के टूल्स का उपयोग करके फोटो पर तुरंत बदलाव कर दूंगा!"
                 else
-                    "Hello! I am your Smart Document & Photo Assistant. Ask me about passport/visa specs, government exam form requirements (SSC, UPSC, Banking), compression tips, or document conversions!",
+                    "Hello! I am your Gemini AI Image & Document Assistant. Attach any photo and tell me what to do:\n• 'Compress this to 50 KB'\n• 'Make India passport photo with white bg'\n• 'Remove background'\n• 'Rotate 90 degrees'\n• 'Apply B&W document filter'\n• 'Add name & date strip'\nI will automatically apply the changes using the app's native tools!",
                 isUser = false
             )
         )
     }
 
-    val quickQuestions = listOf(
-        "SSC / UPSC Exam Photo Rules",
-        "US Visa (2x2 inch) Specifications",
-        "India Passport 35x45 mm rules",
-        "How to compress PDF under 100 KB?"
+    val photoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                val bmp = withContext(Dispatchers.IO) {
+                    BitmapUtils.decodeSampledBitmapFromUri(context, uri, 1600, 1600)
+                }
+                selectedAttachedBitmap = bmp
+                selectedAttachedSize = StorageUtils.getFileSizeFromUri(context, uri)
+            }
+        }
+    }
+
+    val quickActionPrompts = listOf(
+        "Make 50 KB",
+        "India Passport 35x45",
+        "US Visa 2x2 in",
+        "Remove Background",
+        "B&W Doc Filter",
+        "Rotate 90°",
+        "Add Name & Date Strip",
+        "Print Sheet 4x6"
     )
 
-    fun sendQuestion(query: String) {
-        if (query.isBlank()) return
-        messages.add(ChatMessage(query, isUser = true))
+    val geminiService = remember { com.example.data.repository.GeminiAiService() }
+
+    fun sendPrompt(query: String) {
+        if (query.isBlank() && selectedAttachedBitmap == null) return
+
+        val attached = selectedAttachedBitmap
+        val origBytes = selectedAttachedSize
+        selectedAttachedBitmap = null
+        selectedAttachedSize = 0L
+
+        messages.add(
+            ChatItem(
+                text = query.ifBlank { "Apply automatic optimization" },
+                isUser = true,
+                attachedBitmap = attached
+            )
+        )
+
         inputText = ""
         isThinking = true
 
         scope.launch {
-            delay(600) // Fluid natural response timing
-            val answer = generateKnowledgeResponse(query)
-            messages.add(ChatMessage(answer, isUser = false))
+            if (attached != null) {
+                // 1. First get real Gemini analysis or insight
+                val geminiInsight = withContext(Dispatchers.IO) {
+                    geminiService.analyzeImageInstruction(
+                        userPrompt = query.ifBlank { "Optimize and enhance this photo" },
+                        bitmap = attached
+                    )
+                }
+
+                // 2. Execute real app tools using AiImageActionProcessor
+                val result = withContext(Dispatchers.IO) {
+                    AiImageActionProcessor.processUserInstruction(
+                        context = context,
+                        inputBitmap = attached,
+                        userPrompt = query,
+                        originalSizeBytes = origBytes
+                    )
+                }
+
+                val baseExplanation = if (currentLang == AppLanguage.HINDI) result.explanationHi else result.explanationEn
+                val finalExplanation = if (geminiInsight.isNotBlank()) {
+                    "$geminiInsight\n\n$baseExplanation"
+                } else {
+                    baseExplanation
+                }
+
+                messages.add(
+                    ChatItem(
+                        text = finalExplanation,
+                        isUser = false,
+                        executionResult = result
+                    )
+                )
+            } else {
+                // REAL live Gemini 3.8 Flash model generation!
+                val liveGeminiAnswer = withContext(Dispatchers.IO) {
+                    geminiService.chatWithGemini(query)
+                }
+                messages.add(ChatItem(text = liveGeminiAnswer, isUser = false))
+            }
             isThinking = false
         }
     }
@@ -99,7 +223,7 @@ fun AiDocAssistantScreen(
     Scaffold(
         topBar = {
             AppTopBar(
-                title = StringsUtil.get(currentLang, "Smart Doc AI Assistant", "स्मार्ट डॉक एआई सहायक"),
+                title = StringsUtil.get(currentLang, "Gemini AI Image Agent", "जेमिनी एआई इमेज एजेंट"),
                 currentLanguage = currentLang,
                 onToggleLanguage = {},
                 canNavigateBack = true,
@@ -113,75 +237,207 @@ fun AiDocAssistantScreen(
                 .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            // Quick suggestions
+            // Quick suggestions chips
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(quickQuestions) { q ->
+                items(quickActionPrompts) { prompt ->
                     FilterChip(
                         selected = false,
-                        onClick = { sendQuestion(q) },
-                        label = { Text(q, style = MaterialTheme.typography.labelSmall) }
+                        onClick = { sendPrompt(prompt) },
+                        label = { Text(prompt, style = MaterialTheme.typography.labelSmall) },
+                        modifier = Modifier.stretchBounceClickable { sendPrompt(prompt) }
                     )
                 }
             }
 
-            // Chat Messages Thread
+            // Message thread
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .testTag("chat_messages_list"),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .padding(horizontal = 14.dp)
+                    .testTag("gemini_chat_messages"),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 items(messages) { msg ->
-                    ChatBubble(message = msg)
+                    ChatBubbleItem(
+                        item = msg,
+                        currentLang = currentLang,
+                        onSaveResult = { result ->
+                            scope.launch {
+                                val savedUri = withContext(Dispatchers.IO) {
+                                    if (result.resultBitmap != null) {
+                                        val uri = StorageUtils.saveBitmapToGallery(
+                                            context,
+                                            result.resultBitmap,
+                                            "ai_modified_${System.currentTimeMillis()}",
+                                            Bitmap.CompressFormat.JPEG,
+                                            95
+                                        )
+                                        if (uri != null && result.resultFile != null) {
+                                            historyRepository.addHistoryItem(
+                                                FileHistoryItem(
+                                                    id = "ai_${System.currentTimeMillis()}",
+                                                    title = "AI Modified Photo (${result.resultWidth}x${result.resultHeight})",
+                                                    filePath = result.resultFile.absolutePath,
+                                                    uriString = uri.toString(),
+                                                    mimeType = "image/jpeg",
+                                                    sizeBytes = result.resultSizeBytes,
+                                                    formattedSize = StorageUtils.formatFileSize(result.resultSizeBytes),
+                                                    toolTag = "Gemini AI Agent"
+                                                )
+                                            )
+                                        }
+                                        uri
+                                    } else null
+                                }
+                                if (savedUri != null) {
+                                    Toast.makeText(context, "Saved image to Gallery!", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        onShareResult = { result ->
+                            if (result.resultFile != null) {
+                                StorageUtils.shareFile(context, result.resultFile, "image/jpeg", "AI Modified Image")
+                            }
+                        }
+                    )
                 }
+
                 if (isThinking) {
                     item {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(8.dp)
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Thinking...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Card3D(modifier = Modifier.widthIn(max = 260.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(6.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(22.dp),
+                                    strokeWidth = 2.5.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = if (currentLang == AppLanguage.HINDI) "एआई बदलाव कर रहा है..." else "AI applying changes...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            // Input Bar
+            // Attached Photo Preview Bar (if user picked an image)
+            AnimatedVisibility(
+                visible = selectedAttachedBitmap != null,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                if (selectedAttachedBitmap != null) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Image(
+                                bitmap = selectedAttachedBitmap!!.asImageBitmap(),
+                                contentDescription = "Attached",
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .clip(RoundedCornerShape(8.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Photo Attached (${selectedAttachedBitmap!!.width} x ${selectedAttachedBitmap!!.height} px)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Now type or tap what changes to apply!",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            IconButton(onClick = { selectedAttachedBitmap = null; selectedAttachedSize = 0L }) {
+                                Icon(imageVector = Icons.Default.Close, contentDescription = "Remove")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Input Bar with Attachment Button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Attach image button with 3D pulse
+                IconButton(
+                    onClick = { photoPicker.launch(arrayOf("image/*")) },
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .stretchBounceClickable { photoPicker.launch(arrayOf("image/*")) }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AddPhotoAlternate,
+                        contentDescription = "Attach Photo",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
                 OutlinedTextField(
                     value = inputText,
                     onValueChange = { inputText = it },
-                    placeholder = { Text("Ask about photo sizes, exam rules...") },
-                    modifier = Modifier.weight(1f).testTag("chat_input_field"),
+                    placeholder = {
+                        Text(
+                            text = if (selectedAttachedBitmap != null) "Tell AI: e.g. '50 KB karo', 'Passport banao'..." else "Ask or attach a photo...",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    },
+                    modifier = Modifier.weight(1f).testTag("ai_agent_input"),
                     shape = RoundedCornerShape(24.dp),
-                    maxLines = 3
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                    )
                 )
+
                 Spacer(modifier = Modifier.width(8.dp))
+
                 IconButton(
-                    onClick = { sendQuestion(inputText) },
-                    enabled = inputText.isNotBlank(),
+                    onClick = { sendPrompt(inputText) },
+                    enabled = inputText.isNotBlank() || selectedAttachedBitmap != null,
                     modifier = Modifier
-                        .size(48.dp)
+                        .size(46.dp)
                         .clip(CircleShape)
-                        .background(if (inputText.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
-                        .testTag("send_chat_button")
+                        .background(if (inputText.isNotBlank() || selectedAttachedBitmap != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                        .stretchBounceClickable { sendPrompt(inputText) }
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
                         contentDescription = "Send",
-                        tint = if (inputText.isNotBlank()) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = if (inputText.isNotBlank() || selectedAttachedBitmap != null) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -190,8 +446,15 @@ fun AiDocAssistantScreen(
 }
 
 @Composable
-fun ChatBubble(message: ChatMessage) {
-    val isUser = message.isUser
+fun ChatBubbleItem(
+    item: ChatItem,
+    currentLang: AppLanguage,
+    onSaveResult: (AiExecutionResult) -> Unit,
+    onShareResult: (AiExecutionResult) -> Unit
+) {
+    val isUser = item.isUser
+    val customTheme = LocalCustomTheme.current
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
@@ -199,7 +462,7 @@ fun ChatBubble(message: ChatMessage) {
         if (!isUser) {
             Box(
                 modifier = Modifier
-                    .size(32.dp)
+                    .size(36.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
@@ -208,72 +471,155 @@ fun ChatBubble(message: ChatMessage) {
                     imageVector = Icons.Default.SmartToy,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
             Spacer(modifier = Modifier.width(8.dp))
         }
 
-        Card(
-            shape = RoundedCornerShape(
-                topStart = 16.dp,
-                topEnd = 16.dp,
-                bottomStart = if (isUser) 16.dp else 4.dp,
-                bottomEnd = if (isUser) 4.dp else 16.dp
-            ),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-            modifier = Modifier.widthIn(max = 280.dp)
-        ) {
-            Text(
-                text = message.text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(12.dp)
-            )
+        Column(modifier = Modifier.widthIn(max = 320.dp)) {
+            // Attached user photo preview
+            if (item.attachedBitmap != null) {
+                Box(
+                    modifier = Modifier
+                        .size(160.dp, 120.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
+                        .align(if (isUser) Alignment.End else Alignment.Start)
+                ) {
+                    Image(
+                        bitmap = item.attachedBitmap.asImageBitmap(),
+                        contentDescription = "Attached",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+            }
+
+            // Message Bubble with 3D Depth
+            Card3D(
+                elevation = if (isUser) 4.dp else 6.dp,
+                shape = RoundedCornerShape(
+                    topStart = 16.dp,
+                    topEnd = 16.dp,
+                    bottomStart = if (isUser) 16.dp else 4.dp,
+                    bottomEnd = if (isUser) 4.dp else 16.dp
+                )
+            ) {
+                Column {
+                    Text(
+                        text = item.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    // If an execution result exists, render the output image, before/after card, and save buttons!
+                    if (item.executionResult != null) {
+                        val res = item.executionResult
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Comparison stats
+                        if (res.resultSizeBytes > 0) {
+                            BeforeAfterCard(
+                                originalDimensions = "${res.originalWidth}x${res.originalHeight} px",
+                                originalSize = StorageUtils.formatFileSize(res.originalSizeBytes),
+                                newDimensions = "${res.resultWidth}x${res.resultHeight} px",
+                                newSize = StorageUtils.formatFileSize(res.resultSizeBytes)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+
+                        // Result Image Preview
+                        if (res.resultBitmap != null) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .border(1.5.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
+                                    .background(Color.White),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Image(
+                                    bitmap = res.resultBitmap.asImageBitmap(),
+                                    contentDescription = "AI Result",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Fit
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { onSaveResult(res) },
+                                    modifier = Modifier.weight(1f).stretchBounceClickable { onSaveResult(res) }
+                                ) {
+                                    Icon(imageVector = Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(StringsUtil.get(currentLang, "Save", "सहेजें"), style = MaterialTheme.typography.labelMedium)
+                                }
+
+                                OutlinedButton(
+                                    onClick = { onShareResult(res) },
+                                    modifier = Modifier.weight(1f).stretchBounceClickable { onShareResult(res) }
+                                ) {
+                                    Icon(imageVector = Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(StringsUtil.get(currentLang, "Share", "शेयर"), style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+
+                        // Extracted OCR text if applicable
+                        if (!res.extractedText.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    Text(
+                                        text = res.extractedText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 6
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
-fun generateKnowledgeResponse(query: String): String {
+private fun generateKnowledgeResponse(query: String): String {
     val q = query.lowercase()
     return when {
-        q.contains("ssc") || q.contains("upsc") || q.contains("exam") -> {
-            "For SSC, UPSC, and State Govt forms:\n" +
-            "• Photo Dimensions: 200 x 230 pixels (approx 3.5 x 4.5 cm)\n" +
-            "• File Size: Must be strictly between 20 KB and 50 KB\n" +
-            "• Background: Plain light grey or white\n" +
-            "• Name & Date Strip: Candidate's full name and Date of Photo (D.O.P) must be clearly printed at the bottom strip.\n" +
-            "You can use our 'Passport Photo Maker' tool with the Exam Form preset to prepare this in one tap!"
+        q.contains("compress") || q.contains("size") || q.contains("kb") || q.contains("कम") -> {
+            "Please attach or pick an image using the Photo button below, and tell me the target size (e.g. '50 KB me compress kar do' or 'Make under 100 KB'). I will immediately use the app's compressor engine to optimize it!"
         }
-        q.contains("us visa") || q.contains("2x2") -> {
-            "For US Visa & Passport:\n" +
-            "• Dimensions: 2 x 2 inches (51 x 51 mm, 600 x 600 px at 300 DPI)\n" +
-            "• Face Proportion: Head height must be between 1 inch and 1 3/8 inches (50% to 69% of image height)\n" +
-            "• Background: Plain white or off-white with zero shadows\n" +
-            "• Eyeglasses: Strictly prohibited since Nov 2016."
+        q.contains("passport") || q.contains("पासपोर्ट") -> {
+            "Attach a portrait photo and specify your country or requirement (e.g. 'India passport photo with white background' or '2x2 US visa'). I will crop, center the face, remove background and prepare it."
         }
-        q.contains("india passport") || q.contains("35x45") -> {
-            "For India Passport:\n" +
-            "• Dimensions: 35 mm width x 45 mm height (413 x 531 px at 300 DPI)\n" +
-            "• Background: Plain white background is mandatory\n" +
-            "• Face Coverage: Head and shoulders must occupy 70% to 80% of photo frame\n" +
-            "• Neutral facial expression with mouth closed and eyes looking directly into the camera."
+        q.contains("background") || q.contains("bg") || q.contains("हटा") -> {
+            "Attach an image and say 'Remove background' or 'Set light blue background'. I will automatically run on-device ML segmentation and apply the change!"
         }
-        q.contains("compress") || q.contains("pdf") -> {
-            "To compress a PDF under 100KB or 200KB:\n" +
-            "1. Open our 'PDF Compressor & Resizer' tool.\n" +
-            "2. Select 'Recommended (Balanced)' or 'Maximum Compression'.\n" +
-            "3. The tool re-renders raster elements at optimal DPI while preserving text clarity.\n" +
-            "4. Check the before/after preview before saving!"
+        q.contains("rotate") || q.contains("घुमा") -> {
+            "Attach an image and say 'Rotate 90 degrees' or 'Rotate clockwise'. I will immediately rotate it for you."
         }
-        q.contains("docx") -> {
-            "DOCX files are XML-based archives containing paragraphs, text styling, and media. Our 'DOCX to PDF' tool parses the XML structure directly and renders formatted paragraphs, headings, bullet lists, and embedded photos into high quality A4 PDF pages on-device."
+        q.contains("ocr") || q.contains("text") || q.contains("लिखा") -> {
+            "Attach any document photo and say 'Extract text' or 'Read text'. I will extract all text on-device using ML Kit Text Recognition!"
         }
         else -> {
-            "This toolkit is 100% on-device and offline. You can resize photos by exact pixels, mm, or target KB, make passport photos with AI background cutouts, scan paper documents to PDF, OCR text from images, merge/split PDFs, and stamp watermarks and signatures!"
+            "Hello! I am your AI Image Agent. Attach any photo using the Gallery button (+) below and tell me what you want to do (e.g., 'Compress to 50 KB', 'Passport photo white bg', 'Remove background', 'Rotate 90°', 'Extract text', 'Add name and date strip'). I will execute the action directly using the app's tools!"
         }
     }
 }
+

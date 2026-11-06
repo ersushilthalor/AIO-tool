@@ -13,12 +13,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+import com.example.data.repository.ThemeMode
+import com.example.data.repository.ThemeRepository
+
 class HomeViewModel(
     val languageRepository: LanguageRepository,
-    val historyRepository: HistoryRepository
+    val historyRepository: HistoryRepository,
+    val themeRepository: ThemeRepository
 ) : ViewModel() {
 
     val currentLanguage: StateFlow<AppLanguage> = languageRepository.currentLanguage
+    val currentTheme: StateFlow<ThemeMode> = themeRepository.currentTheme
     val recentFiles: StateFlow<List<FileHistoryItem>> = historyRepository.recentFiles
 
     private val _searchQuery = MutableStateFlow("")
@@ -214,12 +219,17 @@ class HomeViewModel(
         languageRepository.toggleLanguage()
     }
 
+    fun toggleTheme() {
+        themeRepository.toggleTheme()
+    }
+
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             return HomeViewModel(
                 LanguageRepository(context.applicationContext),
-                HistoryRepository(context.applicationContext)
+                HistoryRepository(context.applicationContext),
+                ThemeRepository(context.applicationContext)
             ) as T
         }
     }
